@@ -32,8 +32,11 @@ def seasonal_naive_forecast(df: pd.DataFrame,
     Seasonal naïve forecast: each future month = same month last year ± trend_delta.
     Adds simple OLS trend correction on annual aggregates.
     """
-    ts = _build_ts(df, metric)
-    if ts.empty or len(ts) < 12:
+    try:
+        ts = _build_ts(df, metric)
+        if ts.empty or len(ts) < 12:
+            return pd.DataFrame()
+    except Exception:
         return pd.DataFrame()
 
     # Only use completed years for stable seasonality

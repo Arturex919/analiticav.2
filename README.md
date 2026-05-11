@@ -271,3 +271,5 @@ km = KMeans(n_clusters=4).fit(property_features[features])
 
 *Desarrollado como solución integral de BI para alquileres vacacionales.*  
 *Datos procesados: 7.500 registros · 211 propiedades · 2019-2026*
+#   a n a l i t i c a v . 2  
+ 
