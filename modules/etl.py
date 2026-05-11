@@ -14,7 +14,7 @@ from typing import Optional
 # ─────────────────────────────────────────────
 # CONSTANTS
 # ─────────────────────────────────────────────
-STATUS_CONFIRMED  = ["Booked"]
+STATUS_CONFIRMED  = ["Booked", "Fact."]
 STATUS_CANCELLED  = ["Declined", "Annuled", "annuled", "Anulled", "Cancelled"]
 STATUS_BLOCKED    = ["Unavailable", "Cleaning"]
 STATUS_OPEN       = ["Open", "Tentative"]
@@ -147,7 +147,7 @@ def _load_docx(f) -> pd.DataFrame:
 
 REQUIRED_COLUMNS = {
     "id":        ["R_ID", "id", "booking_id", "reservation_id"],
-    "status":    ["R_STATUS", "status", "estado"],
+    "status":    ["R_STATUS", "R_CONTA", "status", "estado"],
     "arrival":   ["R_ARRIVAL", "arrival", "llegada", "check_in"],
     "departure": ["R_DEPARTURE", "departure", "salida", "check_out"],
     "nights":    ["R_NIGHTS", "nights", "noches"],
