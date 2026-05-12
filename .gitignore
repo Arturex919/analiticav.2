@@ -54,8 +54,6 @@ desktop.ini
 
 # Antigravity / AI agent
 .antigravity/
-.agents/
-skills-lock.json
 
 # Scratch / temp files
 scratch/
