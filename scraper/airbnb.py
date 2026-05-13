@@ -7,58 +7,61 @@ import asyncio
 import random
 import re
 import os
+import sys
 from datetime import date, datetime
 import pandas as pd
 from playwright.async_api import Page
 
-from scraper.browser import crear_navegador, cerrar_navegador
-from scraper.human import (
-    mover_raton_humano, scroll_humano, simular_lectura,
-    pausa_humana, pausa_entre_paginas
-)
+# Soporte para ejecución directa (py -m scraper.airbnb) e importación
+try:
+    from scraper.browser import crear_navegador, cerrar_navegador
+    from scraper.human import (
+        mover_raton_humano, scroll_humano, simular_lectura,
+        pausa_humana, pausa_entre_paginas
+    )
+except ModuleNotFoundError:
+    # Fallback: añadir raíz del proyecto al path
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from scraper.browser import crear_navegador, cerrar_navegador
+    from scraper.human import (
+        mover_raton_humano, scroll_humano, simular_lectura,
+        pausa_humana, pausa_entre_paginas
+    )
 
 # ─────────────────────────────────────────────
 # CONSTANTES Y SELECTORES
 # ─────────────────────────────────────────────
 
-# Selectores para tarjetas de propiedad (en orden de preferencia)
+# Selectores para tarjetas de propiedad — validados con test_scraper.py
 SELECTORES_TARJETA = [
-    '[data-testid="card-container"]',
-    '[itemprop="itemListElement"]',
+    '[data-testid="card-container"]',       # ✅ Confirmado (18 elementos)
+    '[itemprop="itemListElement"]',          # ✅ Confirmado fallback
     'div[data-testid="listing-card-wrapper"]',
-    'div[class*="c4mnd7m"]',
 ]
 
-# Selectores para precio
+# Selectores para precio — validados con test_scraper.py
 SELECTORES_PRECIO = [
-    '[data-testid="price-availability-row"]',
+    '[data-testid="price-availability-row"]',  # ✅ Confirmado (18 elementos)
     '._1jo4hgw',
     '[class*="pricingText"]',
-    'span[class*="Price"]',
-    'div[class*="price"]',
 ]
 
-# Selectores para título
+# Selectores para título — validados con test_scraper.py
 SELECTORES_TITULO = [
-    '[data-testid="listing-card-title"]',
+    '[id^="title_"]',                       # El más específico (ej: title_12345)
+    '[data-testid="listing-card-title"]',   # ✅ Confirmado (18 elementos)
     'div[data-testid="listing-card-name"]',
-    '[class*="title"]',
-    'span[class*="name"]',
 ]
 
-# Selectores para rating
-SELECTORES_RATING = [
-    '[class*="r1dxllyb"]',
-    '[aria-label*="estrellas"]',
-    '[aria-label*="stars"]',
-    'span[class*="rating"]',
-]
+# Nota: el rating NO tiene selector CSS válido en Airbnb actualmente.
+# Se extrae vía regex del texto completo de la tarjeta (ej: "4,81 (113)")
+SELECTORES_RATING = []
 
-# Columnas del CSV de salida
+# Columnas del CSV de salida (incluyendo propiedad_referencia)
 COLUMNAS_CSV = [
     "nombre", "precio_noche", "rating", "num_reviews",
     "tipo", "capacidad", "url", "fecha_scraping",
-    "checkin", "checkout", "ciudad"
+    "checkin", "checkout", "ciudad", "propiedad_referencia"
 ]
 
 # Ruta de salida del CSV
@@ -69,15 +72,28 @@ RUTA_CSV = "data/mercado_airbnb.csv"
 # FUNCIONES AUXILIARES DE EXTRACCIÓN
 # ─────────────────────────────────────────────
 
-def _limpiar_precio(texto: str) -> int | None:
-    """Extrae el número entero de un texto de precio (ej: '€ 120 noche' → 120)."""
+def _limpiar_precio(texto: str, noches: int = 1) -> int | None:
+    """
+    Extrae el precio por noche de un texto.
+    Airbnb puede mostrar el precio total ('513 € en total') o por noche.
+    Si detecta 'total', divide entre noches para obtener precio/noche.
+    """
     if not texto:
         return None
-    # Buscar número entre 2 y 5 dígitos (precio por noche razonable)
-    numeros = re.findall(r'\d{2,5}', texto.replace('.', '').replace(',', ''))
-    if numeros:
-        return int(numeros[0])
-    return None
+    # Limpiar separadores de miles europeos (1.234 → 1234) y espacios raros
+    texto_limpio = texto.replace('.', '').replace(',', '').replace('\xa0', ' ')
+    # Buscar el primer número de 2 a 5 dígitos (precio)
+    numeros = re.findall(r'\d{2,5}', texto_limpio)
+    if not numeros:
+        return None
+    
+    # Si hay múltiples números y dice "total", el primero suele ser el total
+    precio = int(numeros[0])
+    
+    # Si el texto indica precio total, dividir entre noches
+    if ('total' in texto.lower() or 'estancia' in texto.lower()) and noches > 1:
+        precio = max(1, precio // noches)
+    return precio
 
 
 def _limpiar_rating(texto: str) -> float | None:
@@ -116,50 +132,98 @@ async def _primer_selector_valido(tarjeta, selectores: list) -> str | None:
 # EXTRACCIÓN DE UNA TARJETA
 # ─────────────────────────────────────────────
 
-async def _extraer_tarjeta(tarjeta, checkin: str, checkout: str, ciudad: str) -> dict | None:
+async def _extraer_tarjeta(
+    tarjeta, checkin: str, checkout: str, ciudad: str,
+    noches: int = 1, propiedad_referencia: str = ""
+) -> dict | None:
     """
     Extrae todos los datos de una tarjeta de propiedad individual.
     Devuelve None si no se puede extraer el precio (dato obligatorio).
     """
     try:
+        # Obtener texto completo de la tarjeta (usado para rating y tipo)
+        texto_completo = ""
+        try:
+            texto_completo = await tarjeta.inner_text(timeout=2000)
+        except Exception:
+            pass
+
         # ── Título ──
+        # Intentamos obtener el título vía selector específico
         titulo_raw = await _primer_selector_valido(tarjeta, SELECTORES_TITULO)
-        nombre = titulo_raw.strip().split('\n')[0] if titulo_raw else "Sin nombre"
+        
+        nombre = "Sin nombre"
+        if titulo_raw:
+            nombre = titulo_raw.strip().split('\n')[0]
+        
+        # Palabras que suelen indicar un título genérico de Airbnb
+        palabras_genericas = ["apartamento en", "casa en", "estudio en", "habitación en", "loft en", "villa en", "vivienda en", "alojamiento en"]
+        es_generico = any(g in nombre.lower() for g in palabras_genericas)
+        
+        # Si el nombre es genérico o no tenemos título, buscamos en el texto completo
+        if (not titulo_raw or es_generico) and texto_completo:
+            lineas = [l.strip() for l in texto_completo.split('\n') if len(l.strip()) > 5]
+            
+            # Filtros de exclusión para limpiar el ruido
+            excluir = ["superanfitrión", "nuevo", "★", "evaluaciones", "reseñas", "profesional", "anfitrión", "dormitorio", "cama", "baño", "noche", "total"]
+            candidatos = [l for l in lineas if not any(e in l.lower() for e in excluir)]
+            
+            # Buscamos la línea que sea más descriptiva y no sea la genérica ya detectada
+            mejor_nombre = nombre
+            for c in candidatos:
+                c_lower = c.lower()
+                # Si encontramos una línea que no tenga las palabras genéricas y sea larga, esa es la buena
+                if not any(g in c_lower for g in palabras_genericas) and len(c) > 8:
+                    mejor_nombre = c
+                    break
+                # Si la línea tiene palabras genéricas pero es distinta a la que ya tenemos y es más larga
+                elif c != nombre and len(c) > len(mejor_nombre) and len(c) > 15:
+                    mejor_nombre = c
+            
+            nombre = mejor_nombre
 
         # ── Precio ──
         precio_raw = await _primer_selector_valido(tarjeta, SELECTORES_PRECIO)
-        precio_noche = _limpiar_precio(precio_raw) if precio_raw else None
+        # Fallback: buscar precio en texto completo si el selector falla
+        if not precio_raw and texto_completo:
+            # Buscar patrón de precio (ej: 513 €)
+            match_precio = re.search(r'(\d[\d\.\s,]*)\s*€', texto_completo)
+            precio_raw = match_precio.group(0) if match_precio else None
+        
+        precio_noche = _limpiar_precio(precio_raw, noches=noches) if precio_raw else None
 
         # Sin precio no hay dato útil
         if not precio_noche:
             return None
 
-        # ── Rating ──
-        rating_raw = await _primer_selector_valido(tarjeta, SELECTORES_RATING)
-        rating = _limpiar_rating(rating_raw) if rating_raw else None
-        num_reviews = _limpiar_reviews(rating_raw) if rating_raw else None
+        # ── Rating — extraído via regex del texto completo ──
+        # Formato en Airbnb.es: "4,81 (113)" o "Valoración media de 4,81 sobre 5"
+        rating = None
+        num_reviews = None
+        if texto_completo:
+            # Patrón: número decimal seguido de paréntesis con reviews
+            match_rating = re.search(r'(\d)[,\.](\d{2})\s*\((\d+)\)', texto_completo)
+            if match_rating:
+                rating = float(f"{match_rating.group(1)}.{match_rating.group(2)}")
+                num_reviews = int(match_rating.group(3))
+            else:
+                # Fallback: buscar solo el decimal
+                match_r2 = re.search(r'(\d)[,\.](\d{2})\s*(?:sobre|out)', texto_completo)
+                if match_r2:
+                    rating = float(f"{match_r2.group(1)}.{match_r2.group(2)}")
 
-        # ── Tipo de alojamiento ──
+        # ── Tipo de alojamiento — búsqueda en texto completo ──
         tipo = "Desconocido"
-        try:
-            # Buscar en texto completo de la tarjeta
-            texto_completo = await tarjeta.inner_text(timeout=2000)
-            for keyword in ["Apartamento entero", "Habitación privada", "Habitación compartida", "Casa entera", "Cabaña"]:
-                if keyword.lower() in texto_completo.lower():
-                    tipo = keyword
-                    break
-        except Exception:
-            pass
+        for keyword in ["Apartamento entero", "Habitación privada", "Habitación compartida", "Casa entera", "Cabaña", "Apartamento en"]:
+            if keyword.lower() in texto_completo.lower():
+                tipo = keyword
+                break
 
         # ── Capacidad ──
         capacidad = None
-        try:
-            texto_completo = texto_completo if 'texto_completo' in dir() else await tarjeta.inner_text(timeout=2000)
-            match_cap = re.search(r'(\d+)\s*(?:huésped|huesped|guest)', texto_completo, re.IGNORECASE)
-            if match_cap:
-                capacidad = int(match_cap.group(1))
-        except Exception:
-            pass
+        match_cap = re.search(r'(\d+)\s*(?:huésped|huesped|guest)', texto_completo, re.IGNORECASE)
+        if match_cap:
+            capacidad = int(match_cap.group(1))
 
         # ── URL ──
         url = ""
@@ -184,6 +248,7 @@ async def _extraer_tarjeta(tarjeta, checkin: str, checkout: str, ciudad: str) ->
             "checkin": checkin,
             "checkout": checkout,
             "ciudad": ciudad,
+            "propiedad_referencia": propiedad_referencia,
         }
 
     except Exception as e:
@@ -195,7 +260,10 @@ async def _extraer_tarjeta(tarjeta, checkin: str, checkout: str, ciudad: str) ->
 # EXTRACCIÓN DE UNA PÁGINA COMPLETA
 # ─────────────────────────────────────────────
 
-async def _extraer_pagina(page: Page, checkin: str, checkout: str, ciudad: str) -> list[dict]:
+async def _extraer_pagina(
+    page: Page, checkin: str, checkout: str, ciudad: str,
+    noches: int = 1, propiedad_referencia: str = ""
+) -> list[dict]:
     """
     Extrae todas las propiedades de la página actual.
     Hace scroll completo para cargar contenido lazy antes de extraer.
@@ -211,7 +279,7 @@ async def _extraer_pagina(page: Page, checkin: str, checkout: str, ciudad: str) 
         try:
             count = await page.locator(selector).count()
             if count > 0:
-                print(f"  ✅ Selector de tarjeta válido: {selector} ({count} tarjetas)")
+                print(f"  ✅ Selector de tarjeta: {selector} ({count} tarjetas)")
                 tarjetas = page.locator(selector)
                 break
         except Exception:
@@ -226,10 +294,13 @@ async def _extraer_pagina(page: Page, checkin: str, checkout: str, ciudad: str) 
 
     for i in range(total):
         tarjeta = tarjetas.nth(i)
-        datos = await _extraer_tarjeta(tarjeta, checkin, checkout, ciudad)
+        datos = await _extraer_tarjeta(
+                tarjeta, checkin, checkout, ciudad,
+                noches=noches, propiedad_referencia=propiedad_referencia
+            )
         if datos:
             resultados.append(datos)
-            print(f"    ✓ {datos['nombre'][:40]} — €{datos['precio_noche']}/noche")
+            print(f"    ✓ {datos['nombre'][:40]} — €{datos['precio_noche']}/noche | ⭐{datos['rating']}")
 
     print(f"  📦 {len(resultados)}/{total} propiedades extraídas con precio.")
     return resultados
@@ -284,7 +355,8 @@ async def scrapear_airbnb(
     checkout: str = "2026-07-20",
     adultos: int = 2,
     max_paginas: int = 3,
-    headless: bool = False
+    headless: bool = False,
+    propiedad_referencia: str = "",
 ) -> list[dict]:
     """
     Scraper principal de Airbnb. Extrae propiedades con comportamiento humano.
@@ -300,6 +372,15 @@ async def scrapear_airbnb(
     Returns:
         Lista de diccionarios con datos de cada propiedad.
     """
+    # Calcular noches para convertir precio total → precio por noche
+    from datetime import date as _date
+    try:
+        d1 = _date.fromisoformat(checkin)
+        d2 = _date.fromisoformat(checkout)
+        noches = max((d2 - d1).days, 1)
+    except Exception:
+        noches = 1
+    print(f"🌙 Noches calculadas: {noches}")
     playwright, browser, context, page = await crear_navegador(headless=headless)
 
     # URL de búsqueda de Airbnb
@@ -340,13 +421,18 @@ async def scrapear_airbnb(
                     await page.goto(url_actual, wait_until="domcontentloaded", timeout=40000)
                     await pausa_humana(2, 4)
 
-                    # ── Detección de CAPTCHA ──
+                    # ── Detección de CAPTCHA (más estricta para evitar falsos positivos) ──
                     contenido = await page.content()
-                    if "captcha" in contenido.lower() or "robot" in contenido.lower():
-                        print("  🤖 CAPTCHA detectado. Guardando screenshot y esperando 60s...")
+                    # Solo es CAPTCHA real si NO hay tarjetas de listado en la página
+                    hay_tarjetas = '[data-testid="card-container"]' in contenido or 'itemListElement' in contenido
+                    es_captcha = (
+                        ("captcha" in contenido.lower() or "are you a robot" in contenido.lower())
+                        and not hay_tarjetas
+                    )
+                    if es_captcha:
+                        print("  🤖 CAPTCHA real detectado. Guardando screenshot y esperando 60s...")
                         await page.screenshot(path=f"data/captcha_p{num_pagina}.png")
                         await asyncio.sleep(60)
-                        # Reintentar desde la home
                         await page.goto("https://www.airbnb.es", wait_until="domcontentloaded")
                         await pausa_humana(5, 10)
                         continue
@@ -360,7 +446,10 @@ async def scrapear_airbnb(
                     )
 
                     # ── Extraer datos ──
-                    resultados_pagina = await _extraer_pagina(page, checkin, checkout, ciudad)
+                    resultados_pagina = await _extraer_pagina(
+                        page, checkin, checkout, ciudad,
+                        noches=noches, propiedad_referencia=propiedad_referencia
+                    )
                     todos_resultados.extend(resultados_pagina)
                     paginas_procesadas += 1
                     exito_pagina = True

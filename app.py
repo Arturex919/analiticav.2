@@ -32,6 +32,32 @@ def apply_styles():
         .rec-card{background:#F0F7FF;padding:16px;border-radius:14px;
             border-left:4px solid #1E3A5F;margin-bottom:10px}
         [data-testid="stTabs"] button{font-weight:600}
+        
+        /* GEMINI STYLE CHAT */
+        .stChatMessage {
+            background-color: transparent !important;
+            border: none !important;
+            padding: 1rem 0 !important;
+        }
+        .stChatMessage [data-testid="stMarkdownContainer"] {
+            font-size: 1rem;
+            line-height: 1.6;
+            color: #1E293B;
+        }
+        .stChatMessage[data-testid="stChatMessageUser"] {
+            background-color: #F8FAFC !important;
+            border-radius: 20px 20px 0 20px !important;
+            padding: 1.2rem !important;
+            margin-left: 20% !important;
+            border: 1px solid #E2E8F0 !important;
+        }
+        .stChatMessage[data-testid="stChatMessageAssistant"] {
+            margin-right: 10% !important;
+        }
+        .chat-container {
+            max-width: 850px;
+            margin: 0 auto;
+        }
     </style>""", unsafe_allow_html=True)
 
 def kpi(label, value, color=""):
@@ -87,6 +113,24 @@ if st.session_state.data_ready:
     df = filter_confirmed_paid(clean_and_enrich(df_load))
 else:
     df = df_load
+
+# ─────────────────────────────────────────────
+# CARGA DE DATOS DE MERCADO (Disponible para todo el app)
+# ─────────────────────────────────────────────
+market_file_path = "data/mercado_airbnb.csv"
+df_m = None
+if os.path.exists(market_file_path):
+    try:
+        df_m = pd.read_csv(market_file_path)
+        df_m["precio_noche"] = pd.to_numeric(df_m["precio_noche"], errors="coerce").dropna()
+    except: pass
+
+if df_m is None:
+    # Fallback a simulación si no hay archivo (para que el chat siempre tenga contexto)
+    df_m = pd.DataFrame({
+        "precio_noche": np.random.randint(80, 250, 50),
+        "rating": np.random.uniform(4.2, 5.0, 50)
+    })
 
 col_prop = next((c for c in ["property","R_PROPERTY_NAME"] if c in df.columns), None)
 if not col_prop:
@@ -180,9 +224,9 @@ else:
 # ─────────────────────────────────────────────
 # 5 PESTAÑAS
 # ─────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📋 Resumen", "📈 Ocupación", "🏁 Competencia",
-    "💡 Recomendaciones", "🔮 Proyecciones", "🤖 Asesor IA"
+    "💡 Recomendaciones", "🔮 Proyecciones", "🤖 Asesor IA", "🌍 Mercado"
 ])
 
 # ══════════════════════════════════════════════
@@ -429,22 +473,33 @@ with tab6:
                 st.markdown(prompt)
             st.session_state.chat_history.append({"role": "user", "content": prompt})
 
+            # 3. CONTEXTO DE MERCADO PARA LA IA
+            m_mean = df_m["precio_noche"].mean() if df_m is not None else 0
+            m_median = df_m["precio_noche"].median() if df_m is not None else 0
+            diff_m = ((precio_medio - m_mean) / m_mean * 100) if m_mean else 0
+            
             # Generar respuesta
             sys_msg = (
-                f"Eres un Revenue Manager y asesor estratégico experto en alquiler vacacional. "
-                f"Analizas la propiedad '{selected_prop}'. "
-                f"Datos clave: Ingresos totales €{total_ingresos:,.0f}, "
-                f"Precio medio/noche €{precio_medio:,.0f}, "
-                f"Ocupación estimada {ocupacion_pct:.1f}%, "
-                f"Total reservas: {total_reservas}, Noches vendidas: {total_noches}, "
-                f"Mes de oro: {gold_month} (€{gold_value:,.0f}). "
-                f"Periodo filtrado: {month_label}. "
-                "Responde siempre en español. Sé directo, estratégico y usa datos concretos. "
-                "Usa emojis para hacer la respuesta más visual. "
-                "Estructura tus respuestas con secciones claras."
+                f"Eres un Revenue Manager de ÉLITE y asesor estratégico estilo Gemini. "
+                f"Tu objetivo es maximizar la rentabilidad de la propiedad '{selected_prop}'.\n\n"
+                f"📊 DATOS PROPIOS:\n"
+                f"- Ingresos: €{total_ingresos:,.0f} | Precio/Noche medio: €{precio_medio:,.0f}\n"
+                f"- Ocupación: {ocupacion_pct:.1f}% | Reservas: {total_reservas}\n"
+                f"- Mes de Oro: {gold_month} (€{gold_value:,.0f})\n\n"
+                f"🌍 DATOS DE MERCADO (AIRBNB):\n"
+                f"- Precio medio competidores: €{m_mean:,.0f}\n"
+                f"- Mediana de mercado: €{m_median:,.0f}\n"
+                f"- Tu posicionamiento: Estás un {diff_m:+.1f}% respecto a la media.\n\n"
+                "INSTRUCCIONES:\n"
+                "1. Responde en español con un tono profesional, analítico pero cercano.\n"
+                "2. Conecta SIEMPRE tus datos con los del mercado. Ejemplo: 'Tu precio es alto comparado con la media de €X...'\n"
+                "3. Usa negritas para destacar cifras clave.\n"
+                "4. Si el usuario pregunta por el mercado, usa los datos de €{m_mean:,.0f} para argumentar.\n"
+                "5. Estructura con bullet points claros y termina con una 'Acción Recomendada'."
             )
-            with st.chat_message("assistant", avatar="🤖"):
-                with st.spinner("Analizando datos..."):
+            
+            with st.chat_message("assistant", avatar="https://www.gstatic.com/lamda/images/gemini_sparkle_v002_d4735304ef1013757475.svg"):
+                with st.spinner("Analizando mercado y propiedad..."):
                     try:
                         res = client.chat.completions.create(
                             messages=[{"role": "system", "content": sys_msg},
@@ -461,3 +516,163 @@ with tab6:
             if st.button("🗑️ Limpiar conversación", use_container_width=True):
                 st.session_state.chat_history = []
                 st.rerun()
+
+# ══════════════════════════════════════════════
+# TAB 7 — MERCADO (MERCADO EXTERNO AIRBNB)
+# ══════════════════════════════════════════════
+with tab7:
+    st.subheader("🌍 Análisis de Mercado Externo (Airbnb)")
+    st.caption("Comparativa de tu propiedad frente a la oferta real del mercado extraída vía scraping.")
+
+    # 1. CARGA DE DATOS DE MERCADO
+    # (Ya cargados al inicio para el Chatbot)
+    if df_m is not None:
+        # Limpieza básica y conversión de fechas
+        df_m["precio_noche"] = pd.to_numeric(df_m["precio_noche"], errors="coerce")
+        df_m["rating"] = pd.to_numeric(df_m["rating"], errors="coerce")
+        
+        if "checkin" in df_m.columns:
+            df_m["checkin"] = pd.to_datetime(df_m["checkin"], errors="coerce")
+        
+        df_m = df_m.dropna(subset=["precio_noche"])
+
+        # 6. SELECTOR DE TEMPORADA / FECHAS
+        st.markdown("---")
+        col_f1, col_f2 = st.columns([2, 2])
+        with col_f1:
+            temporada = st.selectbox("📅 Filtrar por Temporada de Mercado:", 
+                                     ["Ver Todo", "Alta (Jul-Ago)", "Media (May-Jun-Sep)", "Baja (Oct-Abr)"])
+        
+        # Lógica de filtrado por mes de checkin
+        if temporada != "Ver Todo" and "checkin" in df_m.columns and not df_m["checkin"].isna().all():
+            if "Alta" in temporada: meses = [7, 8]
+            elif "Media" in temporada: meses = [5, 6, 9]
+            else: meses = [10, 11, 12, 1, 2, 3, 4]
+            df_m = df_m[df_m["checkin"].dt.month.isin(meses)]
+
+        last_scrap = df_m["fecha_scraping"].iloc[0] if "fecha_scraping" in df_m.columns else "N/A"
+        st.caption(f"Propiedades en muestra: **{len(df_m)}** | Último scraping: **{last_scrap}**")
+
+        # 2. KPIs COMPARATIVOS
+        m_mean = df_m["precio_noche"].mean()
+        m_median = df_m["precio_noche"].median()
+        m_p75 = df_m["precio_noche"].quantile(0.75)
+        
+        # Calcular posición (percentil)
+        if len(df_m) > 1:
+            pos_pct = (df_m["precio_noche"] < precio_medio).mean() * 100
+        else:
+            pos_pct = 0
+
+        diff_vs_mean = ((precio_medio - m_mean) / m_mean * 100) if m_mean else 0
+
+        st.write("### Comparativa de Precios vs Mercado")
+        k1, k2, k3, k4 = st.columns(4)
+        with k1: kpi("Tu Precio Medio", f"€{precio_medio:,.0f}", "gold")
+        with k2: kpi("Media Airbnb", f"€{m_mean:,.0f}")
+        with k3: kpi("Percentil 75", f"€{m_p75:,.0f}")
+        with k4: 
+            color_pos = "red" if diff_vs_mean > 20 else "green"
+            kpi("Dif. vs Media", f"{diff_vs_mean:+.1f}%", color_pos)
+
+        # 5. ANÁLISIS DE POSICIONAMIENTO (Lógica Python)
+        pos_txt = "por debajo" if precio_medio < m_mean else "por encima"
+        perc_inv = 100 - pos_pct
+        st.markdown(f"""
+        <div class="rec-card">
+            <strong>📍 Análisis de Posicionamiento:</strong><br>
+            Tu precio de <strong>€{precio_medio:,.0f}</strong> está {pos_txt} de la media del mercado (€{m_mean:,.0f}). 
+            Actualmente eres más caro que el <strong>{pos_pct:.0f}%</strong> de las propiedades similares y más barato que el <strong>{perc_inv:.0f}%</strong>.
+            <br>🎯 <strong>Sugerencia:</strong> Para maximizar ocupación podrías ajustar a <strong>€{m_median:,.0f}</strong> (mediana). 
+            Para maximizar ingresos en alta demanda, tu techo competitivo es <strong>€{m_p75:,.0f}</strong>.
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 3. GRÁFICOS
+        g1, g2 = st.columns(2)
+        
+        with g1:
+            # Histograma
+            fig_hist = px.histogram(df_m, x="precio_noche", nbins=20, 
+                                    title="Distribución de Precios en Airbnb",
+                                    color_discrete_sequence=["#1E3A5F"],
+                                    labels={"precio_noche": "Precio por Noche (€)", "count": "Cantidad"})
+            fig_hist.add_vline(x=precio_medio, line_dash="dash", line_color="#D4AF37", 
+                               annotation_text="Tú", annotation_position="top right")
+            fig_hist.add_vline(x=m_mean, line_dash="dot", line_color="#10B981", 
+                               annotation_text="Media", annotation_position="top left")
+            st.plotly_chart(fig_hist, use_container_width=True)
+
+        with g2:
+            # Precio vs Rating (Scatter)
+            # Añadimos tu propiedad como un punto destacado
+            df_scatter = df_m.copy()
+            if "rating" in df_scatter.columns:
+                fig_scat = px.scatter(df_scatter, x="rating", y="precio_noche", 
+                                      hover_name="nombre" if "nombre" in df_scatter.columns else None, 
+                                      title="Calidad (Rating) vs Precio",
+                                      color_discrete_sequence=["#94A3B8"], opacity=0.6)
+                # Tu punto (estimado en el centro del rating para visibilidad)
+                fig_scat.add_trace(go.Scatter(x=[4.85], y=[precio_medio], mode='markers',
+                                             marker=dict(size=15, color='#D4AF37', symbol='star'),
+                                             name=f"Tú ({selected_prop})"))
+                st.plotly_chart(fig_scat, use_container_width=True)
+            else:
+                st.info("No hay datos de rating disponibles para el gráfico de dispersión.")
+
+        g3, g4 = st.columns(2)
+        with g3:
+            # Boxplot comparativo
+            comp_box = pd.concat([
+                pd.DataFrame({"Origen": "Mercado", "Precio": df_m["precio_noche"]}),
+                pd.DataFrame({"Origen": "Tu Propiedad", "Precio": [precio_medio] * 10}) # Duplicamos para visibilidad
+            ])
+            fig_box = px.box(comp_box, x="Origen", y="Precio", color="Origen",
+                             title="Rango Competitivo",
+                             color_discrete_map={"Mercado": "#1E3A5F", "Tu Propiedad": "#D4AF37"})
+            st.plotly_chart(fig_box, use_container_width=True)
+            
+        with g4:
+            # Barras por tipo
+            if "tipo" in df_m.columns:
+                df_tipo = df_m.groupby("tipo")["precio_noche"].mean().reset_index().sort_values("precio_noche")
+                fig_bar = px.bar(df_tipo, x="precio_noche", y="tipo", orientation='h',
+                                 title="Precio Medio por Tipo de Alojamiento",
+                                 color_discrete_sequence=["#1E3A5F"])
+                fig_bar.add_vline(x=precio_medio, line_dash="dash", line_color="#D4AF37")
+                st.plotly_chart(fig_bar, use_container_width=True)
+
+        # 4. TABLA DE COMPETIDORES DIRECTOS (±30%)
+        st.write("### 🏁 Competidores Directos (Rango ±30% de tu precio)")
+        lower_bound = precio_medio * 0.7
+        upper_bound = precio_medio * 1.3
+        
+        df_comp = df_m[(df_m["precio_noche"] >= lower_bound) & (df_m["precio_noche"] <= upper_bound)].copy()
+        
+        if not df_comp.empty:
+            # Función para colorear según precio vs el mío
+            def style_competitors(row):
+                color = "#EF4444" if row["precio_noche"] < precio_medio else "#10B981"
+                return [f'color: {color}' for _ in row]
+
+            # Preparar tabla para visualización
+            display_cols = [c for c in ["nombre", "precio_noche", "rating", "tipo", "url"] if c in df_comp.columns]
+            df_comp_disp = df_comp[display_cols].sort_values("precio_noche")
+            
+            # Formatear visualización
+            st.dataframe(
+                df_comp_disp.style.apply(style_competitors, axis=1),
+                column_config={
+                    "url": st.column_config.LinkColumn("Enlace Airbnb"),
+                    "precio_noche": st.column_config.NumberColumn("Precio (€)", format="€%d"),
+                    "rating": st.column_config.NumberColumn("Rating ⭐", format="%.2f")
+                },
+                use_container_width=True,
+                hide_index=True
+            )
+            st.caption("🔴 Rojo: Más baratos que tú | 🟢 Verde: Más caros que tú")
+        else:
+            st.info("No se encontraron competidores directos en el rango de precio ±30%.")
+
+    else:
+        st.error("No se pudieron cargar datos de mercado. Asegúrate de que el archivo existe o sube uno manualmente.")

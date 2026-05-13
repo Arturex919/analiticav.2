@@ -132,17 +132,33 @@ async def test_scraper():
             except Exception as e:
                 print(f"   ⚠️  {selector}: ERROR — {e}")
 
-        # ── PASO 8: Mostrar texto plano de la primera tarjeta ──
+        # ── PASO 8: Verificación profunda de la primera tarjeta ──
         if selector_valido:
-            print(f"\n8️⃣  Texto plano de la PRIMERA TARJETA ({selector_valido}):")
+            print(f"\n8️⃣  Verificación de la PRIMERA TARJETA:")
             try:
                 primera = page.locator(selector_valido).first
+                
+                # Probar título
+                for sel_t in SELECTORES_TITULO:
+                    el = primera.locator(sel_t).first
+                    if await el.count() > 0:
+                        txt = await el.inner_text()
+                        print(f"   📍 Título ({sel_t}): '{txt.strip()}'")
+                
+                # Probar precio
+                for sel_p in SELECTORES_PRECIO:
+                    el = primera.locator(sel_p).first
+                    if await el.count() > 0:
+                        txt = await el.inner_text()
+                        print(f"   📍 Precio ({sel_p}): '{txt.strip()}'")
+
+                # Texto completo para referencia
                 texto = await primera.inner_text(timeout=3000)
-                print("─" * 40)
-                print(texto[:500])  # Limitamos a 500 chars para no saturar la consola
-                print("─" * 40)
+                print("\n   --- Texto completo de la tarjeta (primeros 300 chars) ---")
+                print(texto[:300].replace('\n', ' | '))
+                print("   -------------------------------------------------------")
             except Exception as e:
-                print(f"   ❌ Error al leer primera tarjeta: {e}")
+                print(f"   ❌ Error en verificación profunda: {e}")
         else:
             print("\n8️⃣  ⚠️  No se encontró ningún selector de tarjeta válido.")
             print("      Prueba a revisar el HTML de la página con las DevTools.")
